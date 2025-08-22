@@ -29,6 +29,7 @@ $db = new PDO('sqlite:' . DB_FILE);
 $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 
 initialize($db);
+seed_schedule($db);
 
 $action = $_GET['action'] ?? '';
 
@@ -94,6 +95,22 @@ function initialize(PDO $db): void {
   SQL);
 }
 
+function seed_schedule(PDO $db): void {
+  $exists = $db->query('SELECT COUNT(1) FROM classes')->fetchColumn();
+  if ($exists) return;
+  $schedule = [
+    ['2025-08-18','07:30','08:30','RUN (ALL LEVELS)','Running',0],
+    ['2025-08-18','09:00','10:00','LES MILLS BODYPUMP W/ JOHANNA','Fitness',12],
+    ['2025-08-18','10:00','11:00','SPINNING','Cycling',12],
+    ['2025-08-18','12:00','13:00','AQUA GYM','Aqua',0]
+  ];
+  $stmt = $db->prepare('INSERT INTO classes(title, category, date, start_time, end_time, capacity) VALUES(?,?,?,?,?,?)');
+  foreach ($schedule as $s) {
+    [$date,$start,$end,$title,$cat,$cap] = $s;
+    $stmt->execute([$title,$cat,$date,$start,$end,$cap]);
+  }
+}
+
 function require_post(): void {
   if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     http_response_code(405);
@@ -130,7 +147,7 @@ function handle_identify(PDO $db): void {
   $name = trim($_POST['name'] ?? '');
   $room = trim($_POST['room'] ?? '');
   if ($name === '' || $room === '') {
-    header('Location: ./?err=' . urlencode('Fyll i namn och rumsnummer.'));
+    header('Location: ./?err=' . urlencode('Please enter name and room number.'));
     exit;
   }
   $fp = fingerprint($name, $room);
@@ -168,18 +185,18 @@ function within_allocation_window(array $class, bool $force = false): bool {
 
 function handle_request(PDO $db): void {
   $u = me($db);
-  if (!$u) { header('Location: ./?err=' . urlencode('Identifiera dig först.')); exit; }
+  if (!$u) { header('Location: ./?err=' . urlencode('Please identify yourself first.')); exit; }
   $class_id = (int)($_POST['class_id'] ?? 0);
   $stmt = $db->prepare('SELECT * FROM classes WHERE id = ?');
   $stmt->execute([$class_id]);
   $c = $stmt->fetch(PDO::FETCH_ASSOC);
-  if (!$c) { header('Location: ./?err=' . urlencode('Passet finns inte.')); exit; }
+  if (!$c) { header('Location: ./?err=' . urlencode('Class not found.')); exit; }
 
   // Already booked? prevent duplicate
   $exists = $db->prepare('SELECT 1 FROM bookings WHERE user_id = ? AND class_id = ? AND status IN ("CONFIRMED","WAITLIST")');
   $exists->execute([$u['id'], $class_id]);
   if ($exists->fetchColumn()) {
-    header('Location: ./?err=' . urlencode('Du är redan med i kön/har plats.'));
+    header('Location: ./?err=' . urlencode('You are already in the queue/have a spot.'));
     exit;
   }
 
@@ -189,27 +206,27 @@ function handle_request(PDO $db): void {
   // also create initial booking as WAITLIST (for transparency)
   $db->prepare('INSERT INTO bookings(user_id, class_id, status, created_at) VALUES(?,?,"WAITLIST",?)')->execute([$u['id'], $class_id, $now]);
 
-  header('Location: ./?ok=' . urlencode('Du är med i kön till "' . $c['title'] . '". Resultat kommer efter fördelningen.'));
+  header('Location: ./?ok=' . urlencode('You joined the queue for "' . $c['title'] . '". Results will appear after allocation.'));
   exit;
 }
 
 function handle_withdraw_request(PDO $db): void {
   $u = me($db);
-  if (!$u) { header('Location: ./?err=' . urlencode('Identifiera dig först.')); exit; }
+  if (!$u) { header('Location: ./?err=' . urlencode('Please identify yourself first.')); exit; }
   $class_id = (int)($_POST['class_id'] ?? 0);
   $db->prepare('DELETE FROM requests WHERE user_id = ? AND class_id = ?')->execute([$u['id'], $class_id]);
   // also remove WAITLIST bookings if any
   $db->prepare('DELETE FROM bookings WHERE user_id = ? AND class_id = ? AND status = "WAITLIST"')->execute([$u['id'], $class_id]);
-  header('Location: ./?ok=' . urlencode('Du har lämnat kön.'));
+  header('Location: ./?ok=' . urlencode('You have left the queue.'));
   exit;
 }
 
 function handle_cancel_booking(PDO $db): void {
   $u = me($db);
-  if (!$u) { header('Location: ./?err=' . urlencode('Identifiera dig först.')); exit; }
+  if (!$u) { header('Location: ./?err=' . urlencode('Please identify yourself first.')); exit; }
   $class_id = (int)($_POST['class_id'] ?? 0);
   $db->prepare('UPDATE bookings SET status = "CANCELLED" WHERE user_id = ? AND class_id = ? AND status = "CONFIRMED"')->execute([$u['id'], $class_id]);
-  header('Location: ./?ok=' . urlencode('Din plats är avbokad. Tack för att du släpper den till någon annan!'));
+  header('Location: ./?ok=' . urlencode('Your spot has been canceled. Thanks for freeing it for someone else!'));
   exit;
 }
 
@@ -221,12 +238,12 @@ function handle_admin_add_class(PDO $db): void {
   $end = trim($_POST['end_time'] ?? '');
   $cap = (int)($_POST['capacity'] ?? 0);
   if (!$title || !$category || !$date || !$start || !$end || $cap <= 0) {
-    header('Location: ./?admin=1&key=' . urlencode($_GET['key']) . '&err=' . urlencode('Fyll i alla fält.'));
+    header('Location: ./?admin=1&key=' . urlencode($_GET['key']) . '&err=' . urlencode('Please fill in all fields.'));
     exit;
   }
   $db->prepare('INSERT INTO classes(title, category, date, start_time, end_time, capacity) VALUES(?,?,?,?,?,?)')
     ->execute([$title, $category, $date, $start, $end, $cap]);
-  header('Location: ./?admin=1&key=' . urlencode($_GET['key']) . '&ok=' . urlencode('Pass tillagt.'));
+  header('Location: ./?admin=1&key=' . urlencode($_GET['key']) . '&ok=' . urlencode('Class added.'));
   exit;
 }
 
@@ -245,7 +262,7 @@ function handle_admin_seed_today(PDO $db): void {
     $db->prepare('INSERT INTO classes(title, category, date, start_time, end_time, capacity) VALUES(?,?,?,?,?,?)')
       ->execute([$title, $cat, $today, $st, $et, $cap]);
   }
-  header('Location: ./?admin=1&key=' . urlencode($_GET['key']) . '&ok=' . urlencode('Exempelpass har lagts till för idag.'));
+  header('Location: ./?admin=1&key=' . urlencode($_GET['key']) . '&ok=' . urlencode('Sample classes added for today.'));
   exit;
 }
 
@@ -265,10 +282,10 @@ function handle_run_allocation(PDO $db): void {
       allocate_for_class($db, (int)$c['id']);
       $allocated++;
     } catch (Throwable $e) {
-      $errors[] = 'Kunde inte fördela klass #' . $c['id'] . ' (' . $c['title'] . '): ' . $e->getMessage();
+      $errors[] = 'Could not allocate class #' . $c['id'] . ' (' . $c['title'] . '): ' . $e->getMessage();
     }
   }
-  $msg = "Fördelning klar. Fördelade {$allocated} pass, hoppade över {$skipped}.";
+  $msg = "Allocation done. Allocated {$allocated} classes, skipped {$skipped}.";
   if ($errors) $msg .= "\n" . implode("\n", $errors);
 
   header('Location: ./?admin=1&key=' . urlencode($_GET['key']) . '&ok=' . urlencode($msg));
@@ -328,7 +345,7 @@ function allocate_for_class(PDO $db, int $class_id): void {
   $stmt = $db->prepare('SELECT * FROM classes WHERE id = ?');
   $stmt->execute([$class_id]);
   $class = $stmt->fetch(PDO::FETCH_ASSOC);
-  if (!$class) throw new RuntimeException('Okänt pass.');
+  if (!$class) throw new RuntimeException('Unknown class.');
 
   // Fetch requesters
   $q = $db->prepare('SELECT r.*, u.id AS uid, u.name, u.room FROM requests r JOIN users u ON u.id = r.user_id WHERE r.class_id = ? ORDER BY r.created_at');
@@ -400,7 +417,7 @@ function handle_mark_attended(PDO $db): void {
   $status = $_POST['status'] ?? 'ATTENDED';
   if (!in_array($status, ['ATTENDED','NO_SHOW','CONFIRMED','CANCELLED','WAITLIST'], true)) $status = 'ATTENDED';
   $db->prepare('UPDATE bookings SET status = ? WHERE id = ?')->execute([$status, $booking_id]);
-  header('Location: ./?admin=1&key=' . urlencode($_GET['key']) . '&ok=' . urlencode('Uppdaterat.'));
+  header('Location: ./?admin=1&key=' . urlencode($_GET['key']) . '&ok=' . urlencode('Updated.'));
   exit;
 }
 
@@ -437,33 +454,30 @@ function render_home(PDO $db): void {
   $admin = (isset($_GET['admin']) && $_GET['admin'] == '1' && ($_GET['key'] ?? '') === ADMIN_KEY);
 
   echo '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">';
-  echo '<title>' . be(HOTEL_NAME) . ' — Digital bokning (demo)</title>';
+  echo '<title>' . be(HOTEL_NAME) . ' — Digital booking (demo)</title>';
   echo '<style>
-    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:0;background:#0b1320;color:#eef2ff}
-    header{padding:20px;border-bottom:1px solid #1e293b;background:#0f172a}
+    :root{--orange:#ff7900;--dark:#000;--light:#f5f5f5;--dark-gray:#333;}
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:0;background:var(--light);color:var(--dark-gray);}
+    header{background:url("gradient.png") center/cover no-repeat var(--dark);padding:12px;}
+    .logo{height:40px}
     .wrap{max-width:1000px;margin:0 auto;padding:20px}
-    .card{background:#0f172a;border:1px solid #1e293b;border-radius:16px;padding:16px;margin-bottom:12px}
+    .card{background:white;border-radius:12px;padding:16px;margin-bottom:12px;box-shadow:0 2px 4px rgba(0,0,0,.1)}
     .row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
-    input,select,button{padding:10px 12px;border-radius:10px;border:1px solid #334155;background:#0b1320;color:#e2e8f0}
-    button.primary{background:#3b82f6;border-color:#2563eb;color:white}
-    button.warn{background:#dc2626;border-color:#b91c1c;color:white}
+    input,select,button{padding:10px 12px;border-radius:10px;border:1px solid var(--dark-gray);background:white;color:var(--dark-gray)}
+    button.primary{background:var(--orange);color:white;border:none}
+    button.warn{background:#dc2626;color:white;border:none}
     .k{font-size:12px;opacity:.8}
-    .ok{background:#064e3b;border:1px solid #065f46;color:#d1fae5;padding:12px;border-radius:10px;margin:10px 0}
-    .err{background:#3f1d1d;border:1px solid #7f1d1d;color:#fecaca;padding:12px;border-radius:10px;margin:10px 0}
+    .ok{background:#d1fae5;border:1px solid #10b981;color:#065f46;padding:12px;border-radius:10px;margin:10px 0}
+    .err{background:#fecaca;border:1px solid #b91c1c;color:#7f1d1d;padding:12px;border-radius:10px;margin:10px 0}
     .muted{opacity:.8}
-    .grid{display:grid;grid-template-columns: 1fr; gap:12px}
-    @media(min-width:800px){.grid{grid-template-columns:1fr 1fr}}
-    .badge{display:inline-block;padding:2px 8px;border:1px solid #334155;border-radius:999px;font-size:12px;margin-left:6px}
-    .tag{padding:2px 8px;border-radius:999px;background:#1f2937;font-size:12px;margin-left:6px}
-    a{color:#93c5fd}
+    .grid{display:grid;grid-template-columns:1fr;gap:12px}
+    @media(min-width:700px){.grid{grid-template-columns:1fr 1fr}}
+    .badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;margin-left:6px;background:var(--dark-gray);color:white}
+    .tag{padding:2px 8px;border-radius:999px;background:var(--orange);color:white;font-size:12px;margin-left:6px}
+    a{color:var(--orange)}
   </style>';
   echo '</head><body>';
-  echo '<header><div class="wrap"><div class="row"><h1 style="margin:0;font-size:20px">' . be(HOTEL_NAME) . ' — Digital bokning (demo)</h1>';
-  echo '<form method="get" class="row" style="margin-left:auto;gap:6px">';
-  echo '<input type="date" name="date" value="' . be($today) . '">';
-  echo '<button type="submit">Välj datum</button>';
-  echo '</form>';
-  echo '</div></div></header>'; 
+  echo '<header><div class="wrap"><div class="row" style="justify-content:space-between;align-items:center"><img src="logo.png" alt="Playitas logo" class="logo"><form method="get" class="row" style="margin-left:auto"><input type="date" name="date" value="' . be($today) . '" onchange="this.form.submit()"></form></div></div></header>';
 
   echo '<div class="wrap">';
   if ($ok) echo '<div class="ok">' . be($ok) . '</div>';
@@ -471,15 +485,15 @@ function render_home(PDO $db): void {
 
   echo '<div class="card">';
   if ($u) {
-    echo '<div class="row"><div>Inloggad som <strong>' . be($u['name']) . '</strong> (Rum ' . be($u['room']) . ')</div>';
-    echo '<form method="get" action="."><input type="hidden" name="action" value="logout"><button class="warn">Byt gäst</button></form></div>';
+    echo '<div class="row"><div>Logged in as <strong>' . be($u['name']) . '</strong> (Room ' . be($u['room']) . ')</div>';
+    echo '<form method="get" action="."><input type="hidden" name="action" value="logout"><button class="warn">Switch guest</button></form></div>';
   } else {
-    echo '<form method="post" action="?action=identify" class="row"><strong>Identifiera dig</strong>
-          <input name="name" placeholder="Namn" required>
-          <input name="room" placeholder="Rumsnummer" required>
-          <button class="primary">Fortsätt</button>
+    echo '<form method="post" action="?action=identify" class="row"><strong>Sign in</strong>
+          <input name="name" placeholder="Name" required>
+          <input name="room" placeholder="Room number" required>
+          <button class="primary">Continue</button>
         </form>';
-    echo '<p class="k muted">Ingen användarkonto krävs. Systemet använder endast namn + rum för att skapa en tillfällig profil.</p>';
+    echo '<p class="k muted">No user account required. The system only uses name and room to create a temporary profile.</p>';
   }
   echo '</div>';
 
@@ -488,27 +502,27 @@ function render_home(PDO $db): void {
     echo '<div class="card">';
     echo '<h3 style="margin-top:0">Admin</h3>';
     echo '<form method="post" action="?action=admin_add_class&key=' . be($_GET['key']) . '" class="row">
-            <input name="title" placeholder="Titel" required>
-            <input name="category" placeholder="Kategori" required>
+            <input name="title" placeholder="Title" required>
+            <input name="category" placeholder="Category" required>
             <input type="date" name="date" value="' . be($today) . '" required>
             <input type="time" name="start_time" value="09:00" required>
             <input type="time" name="end_time" value="10:00" required>
-            <input type="number" name="capacity" placeholder="Kapacitet" min="1" style="width:120px" required>
-            <button class="primary">Lägg till pass</button>
+            <input type="number" name="capacity" placeholder="Capacity" min="1" style="width:120px" required>
+            <button class="primary">Add class</button>
           </form>';
     echo '<div class="row" style="margin-top:8px">
-            <a class="badge" href="?action=run_allocation&key=' . be($_GET['key']) . '&date=' . be($today) . '">Kör fördelning (respekt. fönster)</a>
-            <a class="badge" href="?action=run_allocation&force=1&key=' . be($_GET['key']) . '&date=' . be($today) . '">Kör fördelning (tvinga)</a>
-            <a class="badge" href="?action=admin_seed_today&key=' . be($_GET['key']) . '">Skapa exempeldag</a>
+            <a class="badge" href="?action=run_allocation&key=' . be($_GET['key']) . '&date=' . be($today) . '">Run allocation (respect window)</a>
+            <a class="badge" href="?action=run_allocation&force=1&key=' . be($_GET['key']) . '&date=' . be($today) . '">Run allocation (force)</a>
+            <a class="badge" href="?action=admin_seed_today&key=' . be($_GET['key']) . '">Seed sample day</a>
           </div>';
-    echo '<p class="k muted">Fördelningsfönster: morgon ' . MORNING_RELEASE_HOUR . ':00, eftermiddag ' . AFTERNOON_RELEASE_HOUR . ':00.</p>';
+    echo '<p class="k muted">Allocation windows: morning ' . MORNING_RELEASE_HOUR . ':00, afternoon ' . AFTERNOON_RELEASE_HOUR . ':00.</p>';
     echo '</div>';
   }
 
   // List classes
   echo '<div class="grid">';
   if (!$classes) {
-    echo '<div class="card">Inga pass för valt datum.</div>';
+    echo '<div class="card">No classes for selected date.</div>';
   }
   foreach ($classes as $c) {
     $counts = class_counts($db, (int)$c['id']);
@@ -519,10 +533,14 @@ function render_home(PDO $db): void {
     echo '<div class="row"><h3 style="margin:0">' . be($c['title']) . '</h3>';
     echo '<span class="tag">' . be($c['category']) . '</span>';
     echo '<span class="badge">' . be($c['date']) . ' ' . be($c['start_time']) . '–' . be($c['end_time']) . '</span>';
-    echo '<span class="badge">Kapacitet: ' . (int)$c['capacity'] . '</span>';
-    echo '<span class="badge">Platser kvar: ' . $free . '</span>';
-    echo '<span class="badge">Kön: ' . $counts['WAITLIST'] . '</span>';
-    echo '<span class="badge">Fönster: ' . ($isMorning ? '08:00' : '13:00') . '</span>';
+    if ((int)$c['capacity'] > 0) {
+      echo '<span class="badge">Capacity: ' . (int)$c['capacity'] . '</span>';
+      echo '<span class="badge">Spots left: ' . $free . '</span>';
+      echo '<span class="badge">Queue: ' . $counts['WAITLIST'] . '</span>';
+      echo '<span class="badge">Window: ' . ($isMorning ? '08:00' : '13:00') . '</span>';
+    } else {
+      echo '<span class="badge">No booking required</span>';
+    }
     echo '</div>';
 
     // Show my status if logged in
@@ -531,9 +549,9 @@ function render_home(PDO $db): void {
       if ($my) {
         $status = $my['status'];
         $note = '';
-        if ($status === 'CONFIRMED') $note = 'Du har en bekräftad plats.';
-        elseif ($status === 'WAITLIST') $note = 'Du står i kö. Fördelning sker efter fönster.';
-        elseif ($status === 'CANCELLED') $note = 'Du har avbokat detta pass.';
+        if ($status === 'CONFIRMED') $note = 'You have a confirmed spot.';
+        elseif ($status === 'WAITLIST') $note = 'You are in the queue. Allocation runs after the window.';
+        elseif ($status === 'CANCELLED') $note = 'You have canceled this class.';
         echo '<p class="muted">Status: <strong>' . be($status) . '</strong>. ' . be($note) . '</p>';
       }
     }
@@ -541,24 +559,26 @@ function render_home(PDO $db): void {
     echo '<div class="row">';
     if ($u) {
       $my = $user_map[(int)$c['id']] ?? null;
-      if (!$my) {
+      if ((int)$c['capacity'] === 0) {
+        echo '<span class="muted">No booking needed.</span>';
+      } elseif (!$my) {
         echo '<form method="post" action="?action=request" class="row">
                 <input type="hidden" name="class_id" value="' . (int)$c['id'] . '">
-                <button class="primary">Gå med i kön</button>
+                <button class="primary">Join queue</button>
               </form>';
       } elseif ($my['status'] === 'WAITLIST') {
         echo '<form method="post" action="?action=withdraw_request" class="row">
                 <input type="hidden" name="class_id" value="' . (int)$c['id'] . '">
-                <button>Ångra / lämna kö</button>
+                <button>Withdraw / leave queue</button>
               </form>';
       } elseif ($my['status'] === 'CONFIRMED') {
         echo '<form method="post" action="?action=cancel_booking" class="row">
                 <input type="hidden" name="class_id" value="' . (int)$c['id'] . '">
-                <button class="warn">Avboka plats</button>
+                <button class="warn">Cancel spot</button>
               </form>';
       }
     } else {
-      echo '<span class="muted">Identifiera dig för att köa / boka.</span>';
+      echo '<span class="muted">Identify yourself to queue / book.</span>';
     }
     echo '</div>';
 
@@ -570,18 +590,18 @@ function render_home(PDO $db): void {
       echo '<hr><div class="k">Admin: roster</div>';
       if ($rows) {
         echo '<table style="width:100%;border-collapse:collapse">';
-        echo '<tr><th style="text-align:left">Gäst</th><th>Rum</th><th>Status</th><th>Ändra</th></tr>';
+        echo '<tr><th style="text-align:left">Guest</th><th>Room</th><th>Status</th><th>Change</th></tr>';
         foreach ($rows as $r) {
           echo '<tr style="border-top:1px solid #334155"><td>' . be($r['name']) . '</td><td style="text-align:center">' . be($r['room']) . '</td><td style="text-align:center">' . be($r['status']) . '</td><td style="text-align:center">';
           echo '<form method="post" action="?action=mark_attended&key=' . be($_GET['key']) . '" class="row" style="justify-content:center">';
           echo '<input type="hidden" name="booking_id" value="' . (int)$r['bid'] . '">';
           echo '<select name="status"><option>CONFIRMED</option><option>WAITLIST</option><option>ATTENDED</option><option>NO_SHOW</option><option>CANCELLED</option></select>';
-          echo '<button>Uppdatera</button></form>';
+          echo '<button>Update</button></form>';
           echo '</td></tr>';
         }
         echo '</table>';
       } else {
-        echo '<p class="muted">Inga bokningar ännu.</p>';
+        echo '<p class="muted">No bookings yet.</p>';
       }
     }
 
@@ -590,14 +610,14 @@ function render_home(PDO $db): void {
   echo '</div>'; // grid
 
   echo '<div class="card">';
-  echo '<h3 style="margin-top:0">Hur fördelningen funkar (rättvisa)</h3>';
-  echo '<ul class="k"><li>Vid fördelning (08:00 för förmiddag, 13:00 för eftermiddag) sorteras kön efter: 1) färre deltaganden inom samma kategori denna vecka, 2) färre totala deltaganden denna vecka, 3) tidigast kötid.</li>
-        <li>Du kan max ha ' . DAILY_CAP_MORNING . ' förmiddagspass och ' . DAILY_CAP_AFTERNOON . ' eftermiddagspass per dag.</li>
-        <li>Tidskrockar blockeras automatiskt.</li>
-        <li>Efter fördelningen ser du om du fått <strong>CONFIRMED</strong> plats eller står på <strong>WAITLIST</strong>.</li></ul>';
+  echo '<h3 style="margin-top:0">How allocation works (fairness)</h3>';
+  echo '<ul class="k"><li>At allocation (08:00 for morning, 13:00 for afternoon) the queue is sorted by: 1) fewer participations in the same category this week, 2) fewer total participations this week, 3) earliest queue time.</li>
+        <li>You can have at most ' . DAILY_CAP_MORNING . ' morning classes and ' . DAILY_CAP_AFTERNOON . ' afternoon classes per day.</li>
+        <li>Time conflicts are blocked automatically.</li>
+        <li>After allocation you will see if you got a <strong>CONFIRMED</strong> spot or remain on the <strong>WAITLIST</strong>.</li></ul>';
   echo '</div>';
 
-  echo '<footer class="wrap" style="opacity:.6;padding-bottom:40px">Demoapp. För produktion: lägg till e-post/SMS-notiser, starkare identitetskontroll (t.ex. engångskod vid incheckning), rensning/arkivering och loggar.</footer>';
+  echo '<footer class="wrap" style="opacity:.6;padding-bottom:40px">Demo app. For production: add email/SMS notifications, stronger identification (e.g. one-time code at check-in), cleanup/archiving and logs.</footer>';
   echo '</div></body></html>';
 }
 
